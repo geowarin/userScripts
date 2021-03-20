@@ -14,18 +14,24 @@ const interceptors = [
     {
         name: "todos",
         url: new RegExp("https://jsonplaceholder.typicode.com/todos.*"),
-        onResponse: response => response,
+        initialState: [],
+        onResponse: (state, response) => state.concat(JSON.parse(response.responseText)),
         updateText: state => `${state.length} todos`
     },
     {
         name: "posts",
         url: new RegExp("https://jsonplaceholder.typicode.com/posts"),
-        onRequest: config => JSON.parse(config.body),
-        updateText: state => `${state.length} posts posted`
+        initialState: [],
+        onRequest: (state, config) => state.concat(JSON.parse(config.body)),
+        updateText: state => `Posted post ids: ${state.map(s => s.userId)}`
     }
 ];
 
-let state = {};
+function initState() {
+    return interceptors.reduce((s, i) => Object.assign(s, {[i.name]: i.initialState}), {});
+}
+
+let state = initState();
 
 const ui = {
     $uiNode: $('<div></div>')
@@ -35,16 +41,27 @@ const ui = {
 
     init: () => {
         interceptors.forEach(interceptor => {
-            const textNode = $("<p>text</p>");
+
+            const rootNode = $("<div></div>");
+            const textNode = $("<p></p>");
             const copyBtn = $("<button>copy</button>")
-                .on("click", () => GM.setClipboard(JSON.stringify(state[interceptor.name] || [])));
+                .on("click", () => GM.setClipboard(JSON.stringify(state[interceptor.name])));
 
             ui.interceptorTextNodes[interceptor.name] = textNode;
 
-            ui.$uiNode
+            rootNode
                 .append(textNode)
                 .append(copyBtn);
+
+            ui.$uiNode.append(rootNode);
         });
+        const resetBtn = $("<button>reset state</button>")
+            .on("click", () => {
+                state = initState();
+                ui.updateInterceptorUI();
+            });
+        ui.$uiNode.append(resetBtn);
+
         ui.$uiNode.appendTo(document.body);
 
         ui.updateInterceptorUI();
@@ -52,7 +69,7 @@ const ui = {
 
     updateInterceptorUI: () => {
         interceptors.forEach(interceptor => {
-            const interceptorState = state[interceptor.name] || [];
+            const interceptorState = state[interceptor.name];
             ui.interceptorTextNodes[interceptor.name].text(interceptor.updateText(interceptorState));
         });
     }
@@ -62,10 +79,9 @@ function fireCallback(callbackName, url, arg) {
     interceptors
         .filter(i => i[callbackName] && i.url.test(url))
         .forEach(interceptor => {
-            const result = interceptor[callbackName](arg);
-            if (result) {
-                state[interceptor.name] = (state[interceptor.name] || []).concat(result);
-            }
+            const prevState = state[interceptor.name];
+            const callback = interceptor[callbackName];
+            state[interceptor.name] = callback(prevState, arg);
             ui.updateInterceptorUI();
         });
 }
@@ -84,15 +100,18 @@ const onRequest = (config) => {
 
 (function (open) {
     window.XMLHttpRequest.prototype.open = function () {
-        var config = this.config = {headers: {}};
-        config.method = arguments[0];
-        config.url = arguments[1];
-        config.async = arguments[2];
-        config.user = arguments[3];
-        config.password = arguments[4];
-        this.config = config;
 
-        this.addEventListener("readystatechange", function () {
+        if (this.readyStateChangeCallback) {
+            this.removeEventListener("readystatechange", this.readyStateChangeCallback)
+        }
+
+        this.config = {headers: {}};
+        this.config.method = arguments[0];
+        this.config.url = arguments[1];
+        this.config.async = arguments[2];
+        this.config.user = arguments[3];
+        this.config.password = arguments[4];
+        this.readyStateChangeCallback = () => {
             if (this.readyState === 4 && this.status !== 0) {
                 const response = {
                     response: this.response,
@@ -102,7 +121,9 @@ const onRequest = (config) => {
                 }
                 onResponse(response);
             }
-        });
+        }
+
+        this.addEventListener("readystatechange", this.readyStateChangeCallback);
         open.apply(this, arguments);
     };
 })(window.XMLHttpRequest.prototype.open);
